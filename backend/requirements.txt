@@ -1,0 +1,12 @@
+channels
+channels_redis
+Django>=4.2
+djangorestframework
+django-filter
+djoser
+djangorestframework-simplejwt
+django-cors-headers
+django-storages[boto3]
+Pillow
+dj-stripe
+stripe
