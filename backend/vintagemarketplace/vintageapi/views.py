@@ -1,11 +1,14 @@
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
+from messaging.utils import _is_blocked
+from messaging.models import UserBlock
 from .models import Item, ItemImage
 from .serializers import ItemSerializer, ItemImageSerializer
 from .permissions import IsSellerOrReadOnly
 
 from rest_framework import permissions
+
 
 class IsSellerOrReadOnly(permissions.BasePermission):
     def has_object_permission(self, request, view, obj):
@@ -33,6 +36,18 @@ class ItemViewSet(viewsets.ModelViewSet):
             raise PermissionError(
                 "Unauthorized deletion of id: %s" % str(instance.id))
         instance.delete()
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if user.is_authenticated:
+            qs = qs.exclude(
+                seller__in=UserBlock.objects.filter(blocker=user).values(
+                    "blocked"))
+            qs = qs.exclude(
+                seller__in=UserBlock.objects.filter(blocked=user).values(
+                    "blocker"))
+        return qs
 
 
 class ItemImageViewSet(viewsets.ModelViewSet):
