@@ -1,11 +1,14 @@
 # messaging/serializers.py
 from rest_framework import serializers
-from rest_framework.decorators import action
-from rest_framework.response import Response
 from django.contrib.auth.models import User
+from django.conf import settings
 from .models import Conversation, Message, UserBlock, UserReport
 from vintageapi.models import Item
 from rest_framework.exceptions import ValidationError
+
+
+MAX_IMAGE_MB = getattr(settings, "CHAT_MAX_IMAGE_MB", 5)
+ALLOWED_IMAGE_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
 
 class MessageSerializer(serializers.ModelSerializer):
@@ -23,6 +26,19 @@ class MessageSerializer(serializers.ModelSerializer):
             return request.build_absolute_uri(obj.image.url)
         return None
 
+    def validate(self, attrs):
+        img = attrs.get("image")
+        if img:
+            # content type & size
+            ctype = getattr(img, "content_type", "") or ""
+            if ctype not in ALLOWED_IMAGE_MIME:
+                raise serializers.ValidationError({"image": ["Unsupported image type."]})
+            if img.size > MAX_IMAGE_MB * 1024 * 1024:
+                raise serializers.ValidationError({"image": [f"Image must be ≤ {MAX_IMAGE_MB}MB."]})
+        body = (attrs.get("body") or "").strip()
+        if not body and not img and self.instance is None:
+            raise serializers.ValidationError({"non_field_errors": ["Message must contain text or an image."]})
+        return attrs
 
 
 class ConversationSerializer(serializers.ModelSerializer):
@@ -30,17 +46,15 @@ class ConversationSerializer(serializers.ModelSerializer):
     buyer_username = serializers.CharField(source="buyer.username", read_only=True)
     seller_username = serializers.CharField(source="seller.username", read_only=True)
     is_muted_for_me = serializers.SerializerMethodField()
-    # Make PKs read-only so DRF never asks for them in POST
     buyer = serializers.PrimaryKeyRelatedField(read_only=True)
     seller = serializers.PrimaryKeyRelatedField(read_only=True)
-
-    # Make item explicitly writable (so validated_data has an Item instance)
     item = serializers.PrimaryKeyRelatedField(queryset=Item.objects.all())
 
     last_message_body = serializers.ReadOnlyField()
     last_message_sender_username = serializers.ReadOnlyField()
     last_message_at = serializers.ReadOnlyField()
     unread_count_for_me = serializers.SerializerMethodField()
+    other_last_read_for_me = serializers.SerializerMethodField()  # <- method name must match
 
     class Meta:
         model = Conversation
@@ -54,6 +68,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             "last_message_at",
             "is_muted_for_me",
             "unread_count_for_me",
+            "other_last_read_for_me",
         ]
         read_only_fields = [
             "buyer", "seller", "created_at",
@@ -62,34 +77,52 @@ class ConversationSerializer(serializers.ModelSerializer):
             "item_title", "buyer_username", "seller_username",
         ]
 
+    # ---------- use _get_for_user() everywhere ----------
     def get_is_muted_for_me(self, obj):
-        user = self.context["request"].user
+        user = self._get_for_user()
+        if not user:
+            return False
         return obj.is_muted_for(user)
 
     def get_unread_count_for_me(self, obj):
-        user = self.context["request"].user
-        return 0 if not user.is_authenticated else obj.unread_count_for(user)
+        user = self._get_for_user()
+        uid = getattr(user, "id", None)
+        if not uid:
+            return 0
+        return obj.unread_count_for(user)
 
-    def validate(self, attrs):
-        # Optional early self-convo guard
-        request = self.context.get("request")
-        item = attrs.get("item")
-        if request and item and getattr(item, "owner", None) == request.user:
-            raise ValidationError("You cannot start a conversation with yourself.")
-        return attrs
+    def get_other_last_read_for_me(self, obj):
+        u = self._get_for_user()
+        uid = getattr(u, "id", None)
+        if uid == obj.buyer_id:
+            return obj.seller_last_read
+        if uid == obj.seller_id:
+            return obj.buyer_last_read
+        return None
 
-    def create(self, validated_data):
-        """Derive buyer/seller here so POST never needs them."""
-        request = self.context["request"]
-        item = validated_data["item"]
-        buyer = request.user
-        seller = getattr(item, "owner", None) or getattr(item, "seller", None)
-        if seller is None:
-            raise ValidationError({"item": ["Item has no seller/owner configured."]})
-        if buyer == seller:
-            raise ValidationError({"detail": "You cannot start a conversation with yourself."})
-        convo, _ = Conversation.objects.get_or_create(item=item, buyer=buyer, seller=seller)
-        return convo
+    def _get_for_user(self):
+        """
+        Prefer explicit 'for_user' or 'for_user_id' (WS/broadcast),
+        else fall back to request.user (HTTP).
+        """
+        user = self.context.get("for_user")
+        if user is not None:
+            return user
+
+        user_id = self.context.get("for_user_id")
+        if user_id is not None:
+            # lightweight shim with attrs used by your methods
+            class _U:
+                def __init__(self, _id):
+                    self.id = _id
+                    self.pk = _id
+                @property
+                def is_authenticated(self):  # if anything checks this
+                    return True
+            return _U(user_id)
+
+        req = self.context.get("request")
+        return getattr(req, "user", None)
 
 
 class UserBlockSerializer(serializers.ModelSerializer):

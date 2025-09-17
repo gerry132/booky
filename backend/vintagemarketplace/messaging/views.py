@@ -2,11 +2,19 @@
 from django.db.models import Q, Subquery, OuterRef
 from django.shortcuts import get_object_or_404
 from django.contrib.auth.models import User
+from rest_framework.exceptions import PermissionDenied, ValidationError
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.exceptions import PermissionDenied, ValidationError
+from .utils import (
+    broadcast_message_new,
+    broadcast_conversation_upsert
+)
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 
 from .models import Conversation, Message, UserReport, UserBlock
 from .serializers import (ConversationSerializer,
@@ -15,6 +23,10 @@ from .serializers import (ConversationSerializer,
                           UserReportSerializer)
 from .utils import _is_blocked
 from vintageapi.models import Item
+
+
+def _other_user(convo, me):
+    return convo.seller if convo.buyer_id == me.id else convo.buyer
 
 
 # ---- pagination ----
@@ -165,7 +177,20 @@ class ConversationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def read(self, request, pk=None):
         convo = self.get_object()
-        convo.mark_as_read(request.user)
+        changed = convo.mark_as_read(request.user)
+
+        if changed:
+            layer = get_channel_layer()
+            async_to_sync(layer.group_send)(
+                f"chat_{convo.pk}",
+                {
+                    "type": "read.receipt",
+                    "conversation_id": convo.pk,
+                    "reader_username": request.user.username,
+                    "last_read_at": (convo.buyer_last_read if request.user.id == convo.buyer_id else convo.seller_last_read).isoformat(),
+                },
+            )
+
         return Response({"ok": True})
 
     @action(detail=True, methods=["post"])
@@ -178,11 +203,11 @@ class ConversationViewSet(viewsets.ModelViewSet):
             {"ok": True, "is_muted_for_me": convo.is_muted_for(request.user)})
 
 
+
 class MessageViewSet(viewsets.ModelViewSet):
     serializer_class = MessageSerializer
 
     def get_permissions(self):
-        # Object-level operations require participant check; create/list are filtered/validated separately
         if self.action in ("retrieve", "update", "partial_update", "destroy"):
             return [permissions.IsAuthenticated(), IsParticipant()]
         return [permissions.IsAuthenticated()]
@@ -196,22 +221,66 @@ class MessageViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
-
+        user = self.request.user
         convo = serializer.validated_data.get("conversation")
-        other_id = convo.seller_id if self.request.user.id == convo.buyer_id else convo.buyer_id
-        other_user = User.objects.get(id=other_id)
-
-        if _is_blocked(self.request.user, other_user):
-            raise PermissionDenied("Blocked by user.")
-        if not convo or (convo.buyer_id != self.request.user.id and convo.seller_id != self.request.user.id):
+        if not convo or (convo.buyer_id != user.id and convo.seller_id != user.id):
             raise PermissionDenied("Not a participant.")
+
+        # Optional: enforce blocks here (uncomment if you have UserBlock)
+        # other = convo.seller if user.id == convo.buyer_id else convo.buyer
+        # if UserBlock.objects.filter(
+        #     Q(blocker=user, blocked=other) | Q(blocker=other, blocked=user)
+        # ).exists():
+        #     raise PermissionDenied("Messaging is blocked between these users.")
 
         body = (serializer.validated_data.get("body") or "").strip()
         image = serializer.validated_data.get("image")
         if not body and not image:
             raise ValidationError({"non_field_errors": ["Message must contain text or an image."]})
 
-        serializer.save(sender=self.request.user)
+        # Save message with sender
+        msg = serializer.save(sender=user)
+
+        # Prepare serialized payloads
+        # Use request context for Message so image_url is absolute for REST clients
+        ser_msg = MessageSerializer(msg, context={"request": self.request}).data
+
+        # For inbox WS, serialize conversation twice with per-user context
+        ser_convo_buyer  = ConversationSerializer(convo, context={"for_user_id": convo.buyer_id}).data
+        ser_convo_seller = ConversationSerializer(convo, context={"for_user_id": convo.seller_id}).data
+
+        # Broadcast to chat group (open thread)
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"chat_{convo.id}",
+            {
+                "type": "chat.message",     # -> ChatConsumer.chat_message
+                "message": ser_msg,
+                "sender": user.username,    # include for consumers that read event["sender"]
+                "origin": "rest.perform_create",
+            },
+        )
+
+        # Broadcast to each participant’s inbox group (list/badges/preview)
+        for uid, payload in (
+            (convo.buyer_id,  ser_convo_buyer),
+            (convo.seller_id, ser_convo_seller),
+        ):
+            async_to_sync(channel_layer.group_send)(
+                f"user_inbox_{uid}",
+                {
+                    "type": "inbox.upsert",       # -> InboxConsumer.inbox_upsert
+                    "conversation": payload,
+                },
+            )
+            async_to_sync(channel_layer.group_send)(
+                f"user_inbox_{uid}",
+                {
+                    "type": "inbox.message_new",  # optional: separate event if you handle counts
+                    "conversation": convo.id,
+                    "message": ser_msg,
+                },
+            )
 
 
 class UserBlockViewSet(viewsets.ModelViewSet):

@@ -9,7 +9,7 @@ https://docs.djangoproject.com/en/5.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
-
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -53,6 +53,8 @@ INSTALLED_APPS = [
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+CORS_ALLOW_ALL_ORIGINS = True  
+
 ASGI_APPLICATION = 'vintagemarketplace.asgi.application'
 
 LOGGING = {
@@ -69,19 +71,37 @@ LOGGING = {
     },
 }
 
-# Redis backend for production (or use InMemoryChannelLayer for local demo)
+REDIS_URL = os.environ.get("REDIS_URL", "redis://127.0.0.1")
+
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
+            # Use tuple form to avoid URL parsing issues on Windows/older versions
             "hosts": [("127.0.0.1", 6379)],
+            # If you need a DB index:
+            # "hosts": [{"address": ("127.0.0.1", 6379), "db": 0}],
         },
     },
 }
 
-
+CHAT_MAX_IMAGE_MB = 5
 
 REST_FRAMEWORK = {
+    "DEFAULT_THROTTLE_CLASSES": [
+        "messaging.throttles.BurstAnonThrottle",
+        "messaging.throttles.SustainedAnonThrottle",
+        "messaging.throttles.BurstUserThrottle",
+        "messaging.throttles.SustainedUserThrottle",
+        "messaging.throttles.PerConversationThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon_burst": "10/min",
+        "anon_sustained": "100/hour",
+        "user_burst": "30/min",
+        "user_sustained": "600/hour",
+        "per_conversation": "12/min",
+    },
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),

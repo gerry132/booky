@@ -1,22 +1,24 @@
-# vintagemarketplace/asgi.py
+# asgi.py
 import os
+import django
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "vintagemarketplace.settings")
+django.setup()
 
 from django.core.asgi import get_asgi_application
 from channels.routing import ProtocolTypeRouter, URLRouter
 from channels.auth import AuthMiddlewareStack
-from channels.security.websocket import AllowedHostsOriginValidator
+from messaging.routing import websocket_urlpatterns
+from messaging.ws_jwt import JWTAuthMiddleware  # import the class, not the stack
 
 django_asgi_app = get_asgi_application()
 
-# Import AFTER settings + get_asgi_application so models can load safely
-import messaging.routing
-
 application = ProtocolTypeRouter({
     "http": django_asgi_app,
-    "websocket": AllowedHostsOriginValidator(
-        AuthMiddlewareStack(
-            URLRouter(messaging.routing.websocket_urlpatterns)
+    # AuthMiddlewareStack runs first (session/cookie auth),
+    # then JWTAuthMiddleware runs and **overrides** scope['user'] if ?token=... is present.
+    "websocket": AuthMiddlewareStack(
+        JWTAuthMiddleware(
+            URLRouter(websocket_urlpatterns)
         )
     ),
 })
