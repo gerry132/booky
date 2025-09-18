@@ -1,10 +1,14 @@
-from rest_framework import viewsets
+from rest_framework import viewsets, status, permissions
+from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
+from django.shortcuts import get_object_or_404
 from messaging.utils import _is_blocked
 from messaging.models import UserBlock
-from .models import Item, ItemImage
-from .serializers import ItemSerializer, ItemImageSerializer
+from .models import Item, ItemImage, WishlistItem, Wishlist
+from .serializers import (ItemSerializer, ItemImageSerializer,
+                          WishlistItemSerializer, WishlistSerializer)
+from rest_framework.response import Response
 from .permissions import IsSellerOrReadOnly
 
 from rest_framework import permissions
@@ -58,3 +62,61 @@ class ItemImageViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         item_id = self.request.data.get('item')
         serializer.save(item_id=item_id)
+
+
+class WishlistViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def _wishlist(self, request):
+        wl, _ = Wishlist.objects.get_or_create(user=request.user)
+        # prefetch for speed
+        return Wishlist.objects.prefetch_related(
+            "items__product"
+        ).get(pk=wl.pk)
+
+    def list(self, request):
+        wl = self._wishlist(request)
+        return Response(WishlistSerializer(wl).data)
+
+    @action(methods=["post"], detail=False)
+    def add(self, request):
+        product_id = request.data.get("product_id")
+        product = get_object_or_404(Product, pk=product_id)
+        wl = self._wishlist(request)
+        item, created = WishlistItem.objects.get_or_create(wishlist=wl, product=product)
+        if not created:
+            # optional: bump quantity
+            item.quantity = max(1, item.quantity)
+            item.save(update_fields=["quantity"])
+        return Response(WishlistItemSerializer(item).data, status=status.HTTP_201_CREATED if created else 200)
+
+    @action(methods=["post"], detail=False)
+    def remove(self, request):
+        product_id = request.data.get("product_id")
+        wl = self._wishlist(request)
+        WishlistItem.objects.filter(wishlist=wl, product_id=product_id).delete()
+        return Response(status=204)
+
+    @action(methods=["post"], detail=False)
+    def toggle(self, request):
+        product_id = request.data.get("product_id")
+        product = get_object_or_404(Item, pk=product_id)
+        wl = self._wishlist(request)
+        qs = WishlistItem.objects.filter(wishlist=wl, product=product)
+        if qs.exists():
+            qs.delete()
+            return Response({"status": "removed"})
+        item = WishlistItem.objects.create(wishlist=wl, product=product)
+        return Response(
+            {"status": "added", "item": WishlistItemSerializer(item).data},
+            status=201)
+
+    @action(methods=["patch"], detail=False)
+    def update_item(self, request):
+        item_id = request.data.get("id")
+        wl = self._wishlist(request)
+        item = get_object_or_404(WishlistItem, pk=item_id, wishlist=wl)
+        serializer = WishlistItemSerializer(item, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

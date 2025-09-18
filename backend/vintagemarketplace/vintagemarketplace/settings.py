@@ -88,20 +88,6 @@ CHANNEL_LAYERS = {
 CHAT_MAX_IMAGE_MB = 5
 
 REST_FRAMEWORK = {
-    "DEFAULT_THROTTLE_CLASSES": [
-        "messaging.throttles.BurstAnonThrottle",
-        "messaging.throttles.SustainedAnonThrottle",
-        "messaging.throttles.BurstUserThrottle",
-        "messaging.throttles.SustainedUserThrottle",
-        "messaging.throttles.PerConversationThrottle",
-    ],
-    "DEFAULT_THROTTLE_RATES": {
-        "anon_burst": "10/min",
-        "anon_sustained": "100/hour",
-        "user_burst": "30/min",
-        "user_sustained": "600/hour",
-        "per_conversation": "12/min",
-    },
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
