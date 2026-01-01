@@ -1,31 +1,32 @@
-from .models import UserBlock
+# messaging/utils.py
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from .serializers import ConversationSerializer, MessageSerializer
+from .models import UserBlock  # (unchanged)
 
 channel_layer = get_channel_layer()
 
-
-def broadcast_conversation_upsert(convo, for_user_id=None):
+def broadcast_conversation_upsert(convo, for_user_id: int):
     """
     Send an upsert of a conversation to the user's inbox group.
-    If for_user_id is supplied, serializer computes per-user fields correctly.
+    Serializer gets per-user context so fields like other_last_read_for_me are correct.
     """
-    channel_layer = get_channel_layer()
     data = ConversationSerializer(
         convo,
-        context={"for_user_id": for_user_id},  # <-- critical
+        context={"for_user_id": for_user_id},
     ).data
 
-    group_name = f"user_inbox_{for_user_id}" if for_user_id else None
-    if group_name:
-        async_to_sync(channel_layer.group_send)(
-            group_name,
-            {
-                "type": "inbox.upsert",
-                "conversation": data,
-            },
-        )
+    # ✅ align with InboxConsumer group name
+    group_name = f"inbox_user_{for_user_id}"
+
+    # ✅ align with InboxConsumer handler name (dot -> underscore)
+    async_to_sync(channel_layer.group_send)(
+        group_name,
+        {
+            "type": "inbox.conversation_upsert",  # maps to InboxConsumer.inbox_conversation_upsert
+            "conversation": data,
+        },
+    )
 
 
 def broadcast_conversation_deleted(convo_id, user_ids):
@@ -49,7 +50,6 @@ def broadcast_message_new(message):
             f"inbox_user_{uid}",
             {"type": "inbox.message_new", "conversation": convo.id, "message": data},
         )
-
 
 def _is_blocked(a, b):
     return UserBlock.objects.filter(

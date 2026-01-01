@@ -36,7 +36,7 @@ class InboxConsumer(AsyncJsonWebsocketConsumer):
             if not self.channel_layer:
                 log.error("InboxConsumer: NO channel layer")
                 await self.send_json({"type": "error", "detail": "no channel layer"})
-                await self.close(code=1011)
+                await self.close(code=1000)
                 return
 
             log.warning("InboxConsumer: about to GROUP_ADD %s", self.group)
@@ -55,7 +55,7 @@ class InboxConsumer(AsyncJsonWebsocketConsumer):
                 await self.send_json({"type": "error", "detail": "server error during connect"})
             except Exception:
                 pass
-            await self.close(code=1011)
+            await self.close(code=1000)
 
     async def disconnect(self, code):
         try:
@@ -76,6 +76,7 @@ class InboxConsumer(AsyncJsonWebsocketConsumer):
     async def inbox_unread_counts(self, event):
         await self.send_json({"type": "unread_counts", **event})
 
+
     @database_sync_to_async
     def _snapshot_conversations(self):
         last = Message.objects.filter(conversation=OuterRef("pk")).order_by("-created_at")
@@ -87,26 +88,10 @@ class InboxConsumer(AsyncJsonWebsocketConsumer):
                 last_message_sender_username=Subquery(last.values("sender__username")[:1]),
                 last_message_at=Subquery(last.values("created_at")[:1]),
             )
-            .order_by("-last_message_at", "-created_at")
             .select_related("item", "buyer", "seller")
+            .order_by("-last_message_at", "-created_at")
         )
-
-        def iso(dt): return dt.isoformat() if dt else None
-
-        out = []
-        for c in qs:
-            out.append({
-                "id": c.id,
-                "item_title": getattr(getattr(c, "item", None), "title", "") or "",
-                "buyer_id": c.buyer_id,
-                "seller_id": c.seller_id,
-                "unread_count_for_me": getattr(c, "unread_count_for_me", 0),
-                "last_message_body": getattr(c, "last_message_body", None),
-                "last_message_sender_username": getattr(c, "last_message_sender_username", None),
-                "last_message_at": iso(getattr(c, "last_message_at", None)),
-                "created_at": iso(getattr(c, "created_at", None)),
-            })
-        return out
+        return ConversationSerializer(qs, many=True, context={"for_user": self.user}).data
 
 
 class ChatConsumer(AsyncJsonWebsocketConsumer):

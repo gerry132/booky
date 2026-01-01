@@ -181,15 +181,31 @@ class ConversationViewSet(viewsets.ModelViewSet):
 
         if changed:
             layer = get_channel_layer()
+
+            # existing chat read receipt
             async_to_sync(layer.group_send)(
                 f"chat_{convo.pk}",
                 {
                     "type": "read.receipt",
                     "conversation_id": convo.pk,
                     "reader_username": request.user.username,
-                    "last_read_at": (convo.buyer_last_read if request.user.id == convo.buyer_id else convo.seller_last_read).isoformat(),
+                    "last_read_at": (
+                        convo.buyer_last_read if request.user.id == convo.buyer_id
+                        else convo.seller_last_read
+                    ).isoformat(),
                 },
             )
+
+            for uid in (convo.buyer_id, convo.seller_id):
+                async_to_sync(layer.group_send)(
+                    f"inbox_user_{uid}",
+                    {
+                        "type": "inbox.conversation_upsert",
+                        "conversation": ConversationSerializer(
+                            convo, context={"for_user_id": uid}
+                        ).data,
+                    },
+                )
 
         return Response({"ok": True})
 

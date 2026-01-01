@@ -3,6 +3,8 @@ from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.utils import timezone
 
+from catalog.models import Category, Brand, Tag
+
 User = get_user_model()
 
 
@@ -13,6 +15,18 @@ class Item(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     created_at = models.DateTimeField(auto_now_add=True)
     seller = models.ForeignKey(User, on_delete=models.CASCADE, related_name="items")
+
+    category = models.ForeignKey(Category, on_delete=models.PROTECT, related_name="items", null=True)
+    brand = models.ForeignKey(Brand, null=True, blank=True, on_delete=models.SET_NULL)
+    tags = models.ManyToManyField(Tag, blank=True)
+
+    condition = models.CharField(max_length=24, null=True, choices=[
+        ("NWT", "New with tags"), ("LN", "Like new"), ("G", "Good"), ("F", "Fair")
+    ])
+    size = models.CharField(max_length=24, blank=True)
+    colors = models.JSONField(default=list, blank=True)
+    materials = models.JSONField(default=list, blank=True)
+    styles = models.JSONField(default=list, blank=True)
 
     def __str__(self):
         return self.title

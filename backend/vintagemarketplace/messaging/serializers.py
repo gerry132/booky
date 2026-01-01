@@ -52,9 +52,10 @@ class ConversationSerializer(serializers.ModelSerializer):
 
     last_message_body = serializers.ReadOnlyField()
     last_message_sender_username = serializers.ReadOnlyField()
-    last_message_at = serializers.ReadOnlyField()
+    last_message_at = serializers.DateTimeField(read_only=True)
+    last_read_for_me = serializers.SerializerMethodField()
     unread_count_for_me = serializers.SerializerMethodField()
-    other_last_read_for_me = serializers.SerializerMethodField()  # <- method name must match
+    other_last_read_for_me = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
@@ -67,6 +68,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             "last_message_body", "last_message_sender_username",
             "last_message_at",
             "is_muted_for_me",
+            "last_read_for_me",
             "unread_count_for_me",
             "other_last_read_for_me",
         ]
@@ -77,7 +79,11 @@ class ConversationSerializer(serializers.ModelSerializer):
             "item_title", "buyer_username", "seller_username",
         ]
 
-    # ---------- use _get_for_user() everywhere ----------
+    def get_last_read_for_me(self, obj):
+        u = self._get_for_user()
+        ts = obj._last_read_for(u) if u else None
+        return ts.isoformat() if ts else None
+
     def get_is_muted_for_me(self, obj):
         user = self._get_for_user()
         if not user:
@@ -91,14 +97,17 @@ class ConversationSerializer(serializers.ModelSerializer):
             return 0
         return obj.unread_count_for(user)
 
+
     def get_other_last_read_for_me(self, obj):
         u = self._get_for_user()
         uid = getattr(u, "id", None)
+        ts = None
         if uid == obj.buyer_id:
-            return obj.seller_last_read
-        if uid == obj.seller_id:
-            return obj.buyer_last_read
-        return None
+            ts = obj.seller_last_read
+        elif uid == obj.seller_id:
+            ts = obj.buyer_last_read
+        return ts.isoformat() if ts else None
+
 
     def _get_for_user(self):
         """

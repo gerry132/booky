@@ -25,8 +25,10 @@ urlpatterns = [
     path('api/accounts/', include('accounts.urls')),
     path('api/orders/', include('orders.urls')),
     path('api/messages/', include('messaging.urls')),
+    path("api/catalog/", include("catalog.urls")),
     path('auth/', include('djoser.urls')),
     path('auth/', include('djoser.urls.jwt')),
+    
 ]
 
 if settings.DEBUG:

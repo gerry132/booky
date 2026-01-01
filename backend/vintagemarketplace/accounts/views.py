@@ -2,6 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.parsers import JSONParser, FormParser, MultiPartParser
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework import generics
 from rest_framework import status
@@ -27,6 +28,7 @@ class UserProfileView(generics.RetrieveAPIView):
 class ProfileViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Profile.objects.select_related('user').all()
     serializer_class = ProfileSerializer
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def patch(self, request):
         profile = request.user.profile
@@ -37,15 +39,15 @@ class ProfileViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['get', 'patch'], permission_classes=[IsAuthenticated])
     def me(self, request):
-        profile = self.queryset.get(user=request.user)
+        profile, _ = Profile.objects.get_or_create(user=request.user)
         if request.method == 'GET':
-            serializer = self.get_serializer(profile)
-            return Response(serializer.data)
-        elif request.method == 'PATCH':
-            serializer = self.get_serializer(profile, data=request.data, partial=True)
-            serializer.is_valid(raise_exception=True)
-            serializer.save()
-            return Response(serializer.data)
+            return Response(self.get_serializer(profile).data)
+
+        # PATCH (supports multipart/form-data for profile_image)
+        serializer = self.get_serializer(profile, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
     @action(detail=True, methods=['get', 'post'])
     def reviews(self, request, pk=None):
